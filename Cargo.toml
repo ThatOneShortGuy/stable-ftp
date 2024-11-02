@@ -1,0 +1,28 @@
+[package]
+name = "stable-ftp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = "0.4.38"
+clap = { version = "4.5.20", features = ["derive"] }
+prost = { version = "*" }
+prost-types = "0.13"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = true
+panic = 'abort'
+
+[[bin]]
+name = "server"
+path = "src/server/main.rs"
+
+[[bin]]
+name = "client"
+path = "src/client/main.rs"
+
+[build-dependencies]
+prost-build = "0.13.3"

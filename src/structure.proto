@@ -20,3 +20,20 @@ message FileDescription {
   required string name = 1;
   required uint64 size = 2;
 }
+
+message FileDescriptionResponse {
+  message Success {
+    enum FileStatus {
+      EXISTS = 0;
+      RESUMEABLE = 1;
+      NONEXISTENT = 2;
+    }
+    required FileStatus status = 1;
+    required uint32 id = 2;
+    required uint32 request_frame = 3;
+  }
+  oneof Event {
+    Success status = 1;
+    string fail_message = 2;
+  }
+}

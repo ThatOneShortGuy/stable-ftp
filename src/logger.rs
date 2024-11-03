@@ -1,4 +1,5 @@
 use chrono::prelude::*;
+use std::fmt::Display;
 use std::fs;
 use std::io::Write;
 
@@ -51,6 +52,35 @@ pub fn info(message: impl AsRef<str>) {
     eprintln!("{message}");
     write_to_logs(&message);
 }
+
+pub trait Loggable<T, E: Display>: Into<Result<T, E>> + Sized {
+    fn with_info(self, message: impl AsRef<str>) -> Result<T, E> {
+        match self.into() {
+            Err(err) => {
+                info(format!("{}: {err}", message.as_ref()));
+                Err(err)
+            }
+            a => a,
+        }
+    }
+    fn with_warning(self, message: impl AsRef<str>) -> Result<T, E> {
+        match self.into() {
+            Ok(v) => Ok(v),
+            Err(err) => {
+                warning(format!("{}: {err}", message.as_ref()));
+                Err(err)
+            }
+        }
+    }
+    fn to_error(self, message: impl AsRef<str>) -> T {
+        match self.into() {
+            Ok(v) => v,
+            Err(err) => error(format!("{}: {err}", message.as_ref())),
+        }
+    }
+}
+
+impl<T, E: Display> Loggable<T, E> for Result<T, E> {}
 
 #[cfg(test)]
 mod tests {

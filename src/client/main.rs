@@ -1,5 +1,5 @@
 use std::{
-    io::Write,
+    io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::PathBuf,
 };
@@ -7,7 +7,10 @@ use std::{
 use clap::Parser;
 use prost::Message;
 
-use stable_ftp::{logger, protos::AuthRequest};
+use stable_ftp::{
+    logger,
+    protos::{AuthRequest, AuthResponse, FileDescription},
+};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -29,7 +32,7 @@ struct Args {
     token: Option<String>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn connect() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let token = match args.token {
@@ -48,5 +51,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(args.target)?;
     stream.write(&auth_request.encode_to_vec())?;
 
+    let mut buf = Vec::with_capacity(1024);
+    stream.read_to_end(&mut buf)?;
+
+    match AuthResponse::decode(buf.as_slice())? {
+        AuthResponse {
+            success: false,
+            failure_reason: msg,
+        } => logger::error(msg),
+        _ => (),
+    };
+
+    let file_description = FileDescription::try_from(args.file)?;
+    stream.write(&file_description.encode_to_vec())?;
+
     Ok(())
+}
+
+fn main() {
+    match connect() {
+        Err(err) => logger::error(err.to_string()),
+        Ok(_) => logger::info("Uploaded file successfully!"),
+    }
 }

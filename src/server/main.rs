@@ -1,24 +1,28 @@
 use std::{
     borrow::BorrowMut,
-    io::{Read, Write},
+    error::Error,
+    io::prelude::*,
     net::{TcpListener, TcpStream},
     time::Duration,
 };
 
 use prost::Message;
 use stable_ftp::{
-    logger,
-    protos::{compare_versions, AuthRequest, AuthResponse, VersionCompatibility},
+    logger::{self, Loggable},
+    protos::{
+        compare_versions, file_description_response::Event, AuthRequest, AuthResponse,
+        FileDescriptionResponse, VersionCompatibility,
+    },
 };
 
 fn handle_auth_err(stream: &mut TcpStream, msg: impl AsRef<str>) {
     let response = AuthResponse {
         success: false,
-        failure_reason: format!("Failed to authenitcate: {}", msg.as_ref()),
+        failure_reason: format!("Failed to Authenitcate: {}", msg.as_ref()),
     };
     stream
         .write(&response.encode_to_vec())
-        .expect("Failed to write to buffer stream");
+        .to_error("Failed to write to buffer stream");
     return;
 }
 
@@ -27,7 +31,7 @@ fn handle_client(mut stream: TcpStream) {
 
     logger::info(format!(
         "New client connected: {}",
-        stream.peer_addr().unwrap()
+        stream.peer_addr().expect("Can't get the peer address??")
     ));
 
     let _bytes_read = match stream.read(&mut buf[..]) {
@@ -38,7 +42,7 @@ fn handle_client(mut stream: TcpStream) {
         }
     };
 
-    let auth_req = match AuthRequest::decode(&buf[..]) {
+    let auth_req = match AuthRequest::decode(&buf[.._bytes_read]) {
         Ok(req) => req,
         Err(err) => {
             handle_auth_err(stream.borrow_mut(), err.to_string());
@@ -50,7 +54,7 @@ fn handle_client(mut stream: TcpStream) {
     let server_version = env!("CARGO_PKG_VERSION").into();
     let client_version = &auth_req.version;
     if let VersionCompatibility::Incompatible = compare_versions(&server_version, client_version) {
-        handle_auth_err(&mut stream, format!("Version types are Incompatible! Client version ({}) is not compatible with server version ({server_version})", auth_req.version));
+        handle_auth_err(&mut stream, format!("Version types are Incompatible! Client version ({client_version}) is not compatible with server version ({server_version})"));
         return;
     }
 
@@ -62,13 +66,31 @@ fn handle_client(mut stream: TcpStream) {
     };
     stream
         .write(&response.encode_to_vec())
-        .unwrap_or_else(|err| {
-            logger::error(format!("Failed to return success auth message: {err}"))
-        });
+        .to_error("Failed to return success auth message");
 
     stream
         .set_read_timeout(Some(Duration::new(5, 0)))
-        .expect("Failed to set the timeout?!?");
+        .to_error("Failed to set the timeout?!?");
+
+    match handle_file_description(&mut stream) {
+        Ok(_) => (),
+        Err(err) => {
+            let res = FileDescriptionResponse {
+                event: Some(Event::FailMessage(err.to_string())),
+            };
+            stream
+                .write(&res.encode_to_vec())
+                .to_error("Failed to write to stream");
+        }
+    }
+}
+
+fn handle_file_description(stream: &mut TcpStream) -> Result<(), Box<dyn Error>> {
+    let mut buf = [0; 1024];
+
+    stream.read(&mut buf)?;
+
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

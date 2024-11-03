@@ -50,4 +50,31 @@ pub mod protos {
         }
     }
     pub use version::*;
+
+    mod file_description {
+
+        use std::path::PathBuf;
+
+        use super::FileDescription;
+
+        impl TryFrom<PathBuf> for FileDescription {
+            fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
+                let filename = match value.file_name() {
+                    Some(f) => match f.to_str() {
+                        Some(s) => s.to_string(),
+                        None => Err(std::io::Error::other("Can't convert path to normal String"))?,
+                    },
+                    None => Err(std::io::Error::other("Failed to get the filename"))?,
+                };
+                let size = std::fs::File::open(value)?.metadata()?.len();
+
+                Ok(Self {
+                    name: filename,
+                    size,
+                })
+            }
+
+            type Error = std::io::Error;
+        }
+    }
 }

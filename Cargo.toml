@@ -9,13 +9,13 @@ clap = { version = "4.5.*", features = ["derive"] }
 prost = { version = "0.*" }
 prost-types = "0.*"
 indicatif = { version = "0.*", features = ["unicode-width"]}
+rusqlite = { version = "*", features = ["bundled"] }
 
 [profile.release]
 lto = "fat"
 codegen-units = 1
 opt-level = 3
 strip = true
-panic = 'abort'
 
 [[bin]]
 name = "server"

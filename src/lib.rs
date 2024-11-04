@@ -1,4 +1,7 @@
+pub mod db;
 pub mod logger;
+
+const DEFAULT_PACKET_SIZE: u64 = 2048;
 
 pub mod protos {
 
@@ -55,9 +58,13 @@ pub mod protos {
 
         use std::path::PathBuf;
 
+        use crate::DEFAULT_PACKET_SIZE;
+
         use super::FileDescription;
 
         impl TryFrom<PathBuf> for FileDescription {
+            type Error = std::io::Error;
+
             fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
                 let filename = match value.file_name() {
                     Some(f) => match f.to_str() {
@@ -71,10 +78,20 @@ pub mod protos {
                 Ok(Self {
                     name: filename,
                     size,
+                    packet_size: DEFAULT_PACKET_SIZE,
                 })
             }
+        }
 
-            type Error = std::io::Error;
+        impl FileDescription {
+            pub fn with_packet_size(mut self, packet_size: u64) -> Self {
+                self.packet_size = packet_size;
+                self
+            }
         }
     }
+}
+
+pub fn num_packets(packet_size: u64, file_size: u64) -> u64 {
+    (file_size as f64 / packet_size as f64).ceil() as u64
 }

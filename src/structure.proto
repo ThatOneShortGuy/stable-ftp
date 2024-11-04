@@ -19,21 +19,23 @@ message AuthResponse {
 message FileDescription {
   required string name = 1;
   required uint64 size = 2;
+  required uint64 packet_size = 3;
 }
 
 message FileDescriptionResponse {
-  message Success {
-    enum FileStatus {
+  message FileStatus {
+    enum FileStatusEnum {
       EXISTS = 0;
       RESUMEABLE = 1;
       NONEXISTENT = 2;
     }
-    required FileStatus status = 1;
-    required uint32 id = 2;
-    required uint32 request_frame = 3;
+    required FileStatusEnum status = 1;
+    required uint64 id = 2;
+    required uint64 request_packet = 3;
+    required uint64 packet_size = 4;
   }
   oneof Event {
-    Success status = 1;
+    FileStatus status = 1;
     string fail_message = 2;
   }
 }

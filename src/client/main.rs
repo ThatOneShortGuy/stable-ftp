@@ -9,7 +9,7 @@ use prost::Message;
 
 use stable_ftp::{
     logger,
-    protos::{AuthRequest, AuthResponse, FileDescription},
+    protos::{AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse},
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -30,6 +30,11 @@ struct Args {
     /// Personal Access Token to the Server (optional with environment variables)
     #[arg(long)]
     token: Option<String>,
+
+    /// Packet size to use went sending the file.
+    /// Larger packets have to do less writing to the database, but may have to send more data if the connection drops
+    #[arg(short, long)]
+    packet_size: Option<u64>,
 }
 
 fn connect() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,26 +56,45 @@ fn connect() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(args.target)?;
     stream.write(&auth_request.encode_to_vec())?;
 
-    let mut buf = Vec::with_capacity(1024);
-    stream.read_to_end(&mut buf)?;
+    let mut buf = [0; 1024];
+    let num_read = stream.read(&mut buf)?;
 
-    match AuthResponse::decode(buf.as_slice())? {
+    match AuthResponse::decode(&buf[..num_read])? {
         AuthResponse {
             success: false,
             failure_reason: msg,
-        } => logger::error(msg),
-        _ => (),
+        } => logger::error(format!("Authentication failure: {msg}")),
+        _ => logger::info("Auth succeeded!"),
     };
 
     let file_description = FileDescription::try_from(args.file)?;
+
+    // Add packet size if specified
+    let file_description = if let Some(packet_size) = args.packet_size {
+        file_description.with_packet_size(packet_size)
+    } else {
+        file_description
+    };
+
     stream.write(&file_description.encode_to_vec())?;
+
+    let nread = stream.read(&mut buf)?;
+    let f_response = FileDescriptionResponse::decode(&buf[..nread])?;
+    logger::info(format!("Read {nread} bytes, {f_response:#?}"));
+
+    match f_response.event.unwrap() {
+        stable_ftp::protos::file_description_response::Event::Status(file_status) => todo!(),
+        stable_ftp::protos::file_description_response::Event::FailMessage(message) => {
+            logger::error(message)
+        }
+    }
 
     Ok(())
 }
 
 fn main() {
     match connect() {
-        Err(err) => logger::error(err.to_string()),
+        Err(err) => logger::error(format!("{}", err.to_string())),
         Ok(_) => logger::info("Uploaded file successfully!"),
     }
 }

@@ -8,8 +8,12 @@ use clap::Parser;
 use prost::Message;
 
 use stable_ftp::{
-    logger,
-    protos::{AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse},
+    file_size_text, logger, num_packets,
+    protos::{
+        self,
+        file_description_response::{file_status::FileStatusEnum, FileStatus},
+        AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse,
+    },
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -37,7 +41,7 @@ struct Args {
     packet_size: Option<u64>,
 }
 
-fn connect() -> Result<(), Box<dyn std::error::Error>> {
+fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let token = match args.token {
@@ -80,16 +84,40 @@ fn connect() -> Result<(), Box<dyn std::error::Error>> {
 
     let nread = stream.read(&mut buf)?;
     let f_response = FileDescriptionResponse::decode(&buf[..nread])?;
-    logger::info(format!("Read {nread} bytes, {f_response:#?}"));
 
-    match f_response.event.unwrap() {
-        stable_ftp::protos::file_description_response::Event::Status(file_status) => todo!(),
-        stable_ftp::protos::file_description_response::Event::FailMessage(message) => {
-            logger::error(message)
+    // Should always return the Some variant
+    let file_status = match f_response.event.unwrap() {
+        protos::file_description_response::Event::Status(file_status) => file_status,
+        protos::file_description_response::Event::FailMessage(message) => logger::error(message),
+    };
+    let FileStatus {
+        request_packet,
+        packet_size,
+        ..
+    } = file_status;
+
+    let num_packets = num_packets(packet_size, file_description.size);
+
+    let file_exists = match file_status.get_status() {
+        FileStatusEnum::Exists => {
+            assert!(num_packets - request_packet == 0);
+            true
         }
+        FileStatusEnum::Resumeable => {
+            logger::info(format!("File already exists! Resuming with packet size {} on packet number {request_packet}", file_size_text(packet_size)));
+            false
+        }
+        FileStatusEnum::Nonexistent => {
+            logger::info(format!("File created!"));
+            false
+        }
+    };
+
+    if file_exists {
+        Err(std::io::Error::other("File already exists"))?
     }
 
-    Ok(())
+    Ok(file_status)
 }
 
 fn main() {

@@ -9,11 +9,12 @@ use prost::Message;
 use rusqlite::Connection;
 use stable_ftp::{
     db::{self, DbFile},
+    file_size_text,
     logger::{self, Loggable},
     num_packets,
     protos::{
         compare_versions,
-        file_description_response::{Event, FileStatus},
+        file_description_response::{file_status::FileStatusEnum, Event, FileStatus},
         AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse, VersionCompatibility,
     },
 };
@@ -48,7 +49,7 @@ fn handle_client(mut stream: TcpStream) {
     let AuthRequest { version, token } = match AuthRequest::decode(&buf[.._bytes_read]) {
         Ok(req) => req,
         Err(err) => {
-            handle_auth_err(&mut stream, err.to_string());
+            handle_auth_err(&mut stream, format!("Auth request not understood: {err}"));
             return;
         }
     };
@@ -73,7 +74,22 @@ fn handle_client(mut stream: TcpStream) {
             .to_error("Failed to write fail to stream");
         return;
     }
-    let user_id = db::get_user_id(&db, &token);
+    let user_id = match db::get_user_id(&db, &token) {
+        Ok(v) => v,
+        Err(err) => {
+            let res = FileDescriptionResponse {
+                event: Some(
+                    stable_ftp::protos::file_description_response::Event::FailMessage(
+                        err.to_string(),
+                    ),
+                ),
+            };
+            stream
+                .write(&res.encode_to_vec())
+                .to_error("Failed to write to stream");
+            return;
+        }
+    };
 
     let response = AuthResponse {
         success: true,
@@ -87,8 +103,8 @@ fn handle_client(mut stream: TcpStream) {
         .set_read_timeout(Some(Duration::new(5, 0)))
         .to_error("Failed to set the timeout?!?");
 
-    match handle_file_description(&mut stream, &db, user_id) {
-        Ok(_) => (),
+    let file = match handle_file_description(&mut stream, &db, user_id) {
+        Ok(file) => file,
         Err(err) => {
             let res = FileDescriptionResponse {
                 event: Some(
@@ -100,15 +116,16 @@ fn handle_client(mut stream: TcpStream) {
             stream
                 .write(&res.encode_to_vec())
                 .to_error("Failed to write to stream");
+            return;
         }
-    }
+    };
 }
 
 fn handle_file_description(
     stream: &mut TcpStream,
     db: &Connection,
     user_id: u64,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<std::fs::File, Box<dyn Error>> {
     let mut buf = [0; 1024];
 
     let nbytes = stream.read(&mut buf)?;
@@ -119,34 +136,71 @@ fn handle_file_description(
         packet_size,
     } = FileDescription::decode(&buf[..nbytes])?;
 
-    let file = db::find_filename(db, &name);
+    let file = db::find_filename(db, &name)?;
 
-    let response = match file {
-        Some(_) => todo!(),
+    let (file, response) = match file {
+        Some(file) => {
+            let status = match file.current_packet == file.total_packets {
+                true => FileStatusEnum::Exists,
+                false => FileStatusEnum::Resumeable,
+            };
+
+            // Ensure the file is *actually* there
+            let real_file = match std::path::Path::new(&file.filename).exists() {
+                true => std::fs::File::open(&file.filename),
+                false => {
+                    logger::info(format!(
+                        "The file \"{}\" in db doesn't actually exist, creating it now",
+                        file.filename
+                            .to_str()
+                            .to_error("Invalid UTF-8 parsing filename")
+                    ));
+                    std::fs::File::create_new(&file.filename)
+                }
+            }?;
+
+            // Find file entry in db
+            let file_status = FileStatus {
+                status: status.into(),
+                id: file.id.unwrap(), // If the file was found in the db, that means it MUST have an id.
+                request_packet: file.current_packet,
+                packet_size: file.packet_size,
+            };
+
+            (
+                real_file,
+                FileDescriptionResponse {
+                    event: Some(Event::Status(file_status)),
+                },
+            )
+        }
         None => {
             let mut file =
                 std::fs::File::create_new(&name).to_error(format!("'{name}' already exists"));
             file.seek_relative(size as i64)?;
             file.write(&[69])?;
+            logger::info(format!(
+                "Adding new file \"{name}\" with size {}",
+                file_size_text(size)
+            ));
 
             let total_packets = num_packets(packet_size, size);
-            let db_file = DbFile::new(name, total_packets, packet_size, user_id);
+            let db_file = DbFile::new(name.into(), total_packets, packet_size, user_id);
             let db_file = db::insert_file(db, db_file)?;
 
-            FileDescriptionResponse {
+            (file, FileDescriptionResponse {
                 event: Some(Event::Status(FileStatus {
                     status: stable_ftp::protos::file_description_response::file_status::FileStatusEnum::Nonexistent.into(),
                     id: db_file.id.expect("Should be a Some varient"),
                     request_packet: 0,
                     packet_size,
-                    
                 })),
-            }
+            })
         }
     };
     stream.write(&response.encode_to_vec())?;
 
-    Ok(())
+    Ok(file)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

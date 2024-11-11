@@ -39,3 +39,17 @@ message FileDescriptionResponse {
     string fail_message = 2;
   }
 }
+
+message FilePart {
+  required uint64 part_num = 1;
+  required bytes data = 2;
+}
+
+message FilePartResponse {
+  enum FilePartEnum {
+    Success = 1;
+    InvalidMessage = 2;
+    InvalidData = 3;
+    InvalidPartNum = 4;
+  }
+}

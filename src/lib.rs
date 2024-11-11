@@ -1,11 +1,23 @@
 pub mod db;
 pub mod logger;
 
-const DEFAULT_PACKET_SIZE: u64 = 2048;
+const DEFAULT_PACKET_SIZE: u64 = 2_u64.pow(20);
+const POSTFIX_SIZES: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
 
 pub mod protos {
 
     include!(concat!(env!("OUT_DIR"), "/structure.rs"));
+
+    impl FileStatus {
+        pub fn get_status(&self) -> FileStatusEnum {
+            match self.status {
+                0 => FileStatusEnum::Exists,
+                1 => FileStatusEnum::Resumeable,
+                2 => FileStatusEnum::Nonexistent,
+                _ => logger::error("Failed to get status of FileStatus"),
+            }
+        }
+    }
 
     mod version {
         use std::fmt::Display;
@@ -52,7 +64,10 @@ pub mod protos {
             }
         }
     }
+    use file_description_response::{file_status::FileStatusEnum, FileStatus};
     pub use version::*;
+
+    use crate::logger;
 
     mod file_description {
 
@@ -94,4 +109,22 @@ pub mod protos {
 
 pub fn num_packets(packet_size: u64, file_size: u64) -> u64 {
     (file_size as f64 / packet_size as f64).ceil() as u64
+}
+
+pub fn file_size_text(file_size: u64) -> String {
+    let (divisor, postfix) = POSTFIX_SIZES
+        .iter()
+        .enumerate()
+        .reduce(
+            |acc, (i, val)| match 1 > 2_i64.pow(i as u32 * 10) - file_size as i64 {
+                true => (i, val),
+                false => acc,
+            },
+        )
+        .unwrap();
+
+    format!(
+        "{:0.2} {postfix}",
+        file_size as f64 / 2_i64.pow(divisor as u32 * 10) as f64
+    )
 }

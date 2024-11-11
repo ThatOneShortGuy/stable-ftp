@@ -1,3 +1,5 @@
 /target
 Logs.txt
 *.sqlite
+*.mkv
+*.mp4

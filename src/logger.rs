@@ -2,6 +2,8 @@ use chrono::prelude::*;
 use std::fmt::Display;
 use std::fs;
 use std::io::Write;
+use std::thread::sleep;
+use std::time::Duration;
 
 fn write_to_logs(message: impl AsRef<str>) {
     let mut file = fs::OpenOptions::new()
@@ -34,6 +36,7 @@ pub fn error(message: impl AsRef<str>) -> ! {
     eprintln!("\x1b[31m{message}\x1b[0m");
     write_to_logs(&message);
     eprintln!("You can find this error in Logs.txt");
+    sleep(Duration::from_secs(5));
     panic!()
 }
 
@@ -53,34 +56,69 @@ pub fn info(message: impl AsRef<str>) {
     write_to_logs(&message);
 }
 
-pub trait Loggable<T, E: Display>: Into<Result<T, E>> + Sized {
-    fn with_info(self, message: impl AsRef<str>) -> Result<T, E> {
-        match self.into() {
+pub trait Loggable<T> {
+    fn with_info(self, message: impl AsRef<str>) -> Self;
+    fn with_warning(self, message: impl AsRef<str>) -> Self;
+    fn to_error(self, message: impl AsRef<str>) -> T;
+}
+
+impl<T, E: Display> Loggable<T> for Result<T, E> {
+    fn with_info(self, message: impl AsRef<str>) -> Self {
+        match self {
+            Ok(val) => Ok(val),
             Err(err) => {
                 info(format!("{}: {err}", message.as_ref()));
                 Err(err)
             }
-            a => a,
         }
     }
-    fn with_warning(self, message: impl AsRef<str>) -> Result<T, E> {
-        match self.into() {
-            Ok(v) => Ok(v),
+
+    fn with_warning(self, message: impl AsRef<str>) -> Self {
+        match self {
+            Ok(val) => Ok(val),
             Err(err) => {
                 warning(format!("{}: {err}", message.as_ref()));
                 Err(err)
             }
         }
     }
+
     fn to_error(self, message: impl AsRef<str>) -> T {
-        match self.into() {
-            Ok(v) => v,
+        match self {
+            Ok(val) => val,
             Err(err) => error(format!("{}: {err}", message.as_ref())),
         }
     }
 }
 
-impl<T, E: Display> Loggable<T, E> for Result<T, E> {}
+impl<T> Loggable<T> for Option<T> {
+    fn with_info(self, message: impl AsRef<str>) -> Self {
+        match self {
+            Some(val) => Some(val),
+            None => {
+                info(format!("{}: Not Found", message.as_ref()));
+                None
+            }
+        }
+    }
+
+    fn with_warning(self, message: impl AsRef<str>) -> Self {
+        match self {
+            Some(val) => Some(val),
+            None => {
+                warning(format!("{}: Not Found", message.as_ref()));
+                None
+            }
+        }
+    }
+
+    fn to_error(self, message: impl AsRef<str>) -> T {
+        match self {
+            Some(val) => val,
+            None => error(format!("{}: Not Found", message.as_ref())),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

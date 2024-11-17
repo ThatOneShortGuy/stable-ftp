@@ -267,7 +267,8 @@ fn recv_files(
     let mut data = Vec::with_len(file_status.packet_size as usize + 48);
 
     for current_packet in file_status.request_packet..file_status.total_packets {
-        let nbytes = read_at_least(stream, &mut data, file_status.packet_size as usize + 32)?;
+        let nbytes = read_at_least(stream, &mut data, file_status.packet_size as usize + 32)
+            .with_warning("Failed to read in the minimum number of bytes")?;
         let FilePart { part_num, data } =
             FilePart::decode(&data[..nbytes]).with_warning(format!(
                 "Failed decoding from {nbytes} where buffer is {}",
@@ -280,13 +281,17 @@ fn recv_files(
         );
         file.write_all(&data)
             .with_warning("Failed to write data to file")?;
-        db_file = db_file.inc_current_packet(con)?;
+        db_file = db_file
+            .inc_current_packet(con)
+            .with_warning("Failed to increment current packet in db")?;
 
         let res = FilePartResponse {
             success: true,
             message: String::new(),
         };
-        stream.write(&res.encode_to_vec())?;
+        stream
+            .write(&res.encode_to_vec())
+            .with_warning("Failed to write FilePartResponse to stream")?;
     }
 
     logger::info(format!(

@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::Parser;
-use prost::{bytes::Buf, Message};
+use prost::Message;
 use rusqlite::Connection;
 use stable_ftp::{
     db::{self, DbFile},
@@ -276,13 +276,6 @@ fn recv_files(
             .with_warning("Failed to write data to file")?;
         db_file = db_file.inc_current_packet(con)?;
 
-        // logger::info(format!(
-        //     "File '{}' wrote part {} of {}",
-        //     db_file.filename.to_string_lossy(),
-        //     part_num,
-        //     db_file.total_packets
-        // ));
-
         let res = FilePartResponse {
             success: true,
             message: String::new(),
@@ -290,6 +283,10 @@ fn recv_files(
         stream.write(&res.encode_to_vec())?;
     }
 
+    logger::info(format!(
+        "Successfully recieved all the data for {}",
+        db_file.filename.to_string_lossy()
+    ));
     Ok(())
 }
 

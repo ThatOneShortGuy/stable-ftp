@@ -200,6 +200,12 @@ fn handle_file_description(
                 total_packets: file.total_packets,
             };
 
+            logger::info(format!(
+                "Resuming file download for \"{}\" on {}/{}",
+                file.filename.to_string_lossy(),
+                file.current_packet(),
+                file.total_packets
+            ));
             (
                 real_file,
                 FileDescriptionResponse {
@@ -261,7 +267,7 @@ fn recv_files(
     let mut data = Vec::with_len(file_status.packet_size as usize + 48);
 
     for current_packet in file_status.request_packet..file_status.total_packets {
-        let nbytes = read_at_least(stream, &mut data, file_status.packet_size as usize)?;
+        let nbytes = read_at_least(stream, &mut data, file_status.packet_size as usize + 32)?;
         let FilePart { part_num, data } =
             FilePart::decode(&data[..nbytes]).with_warning(format!(
                 "Failed decoding from {nbytes} where buffer is {}",

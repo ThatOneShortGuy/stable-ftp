@@ -2,8 +2,6 @@ use chrono::prelude::*;
 use std::fmt::Display;
 use std::fs;
 use std::io::Write;
-use std::thread::sleep;
-use std::time::Duration;
 
 fn write_to_logs(message: impl AsRef<str>) {
     let mut file = fs::OpenOptions::new()
@@ -36,7 +34,6 @@ pub fn error(message: impl AsRef<str>) -> ! {
     eprintln!("\x1b[31m{message}\x1b[0m");
     write_to_logs(&message);
     eprintln!("You can find this error in Logs.txt");
-    sleep(Duration::from_secs(5));
     panic!()
 }
 

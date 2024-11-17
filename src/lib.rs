@@ -1,7 +1,8 @@
 pub mod db;
 pub mod logger;
 
-const DEFAULT_PACKET_SIZE: u64 = 2_u64.pow(20);
+pub const DEFAULT_PACKET_SIZE: u64 = 2_u64.pow(22);
+pub const MIN_PACKET_SIZE: u64 = 2u64.pow(20);
 const POSTFIX_SIZES: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
 
 pub mod protos {
@@ -77,10 +78,10 @@ pub mod protos {
 
         use super::FileDescription;
 
-        impl TryFrom<PathBuf> for FileDescription {
+        impl TryFrom<&PathBuf> for FileDescription {
             type Error = std::io::Error;
 
-            fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
+            fn try_from(value: &PathBuf) -> Result<Self, Self::Error> {
                 let filename = match value.file_name() {
                     Some(f) => match f.to_str() {
                         Some(s) => s.to_string(),
@@ -127,4 +128,18 @@ pub fn file_size_text(file_size: u64) -> String {
         "{:0.2} {postfix}",
         file_size as f64 / 2_i64.pow(divisor as u32 * 10) as f64
     )
+}
+
+pub trait VecWithLen {
+    fn with_len(len: usize) -> Self;
+}
+
+impl<T> VecWithLen for Vec<T> {
+    fn with_len(len: usize) -> Self {
+        let mut vec = Self::with_capacity(len);
+        unsafe {
+            vec.set_len(len);
+        }
+        vec
+    }
 }

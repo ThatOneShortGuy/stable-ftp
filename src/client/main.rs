@@ -1,19 +1,26 @@
 use std::{
-    io::{Read, Write},
+    error::Error,
+    fs,
+    io::{Read, Seek, Write},
     net::{SocketAddr, TcpStream},
     path::PathBuf,
 };
 
 use clap::Parser;
+use indicatif::{ProgressBar, ProgressStyle};
 use prost::Message;
 
 use stable_ftp::{
-    file_size_text, logger, num_packets,
+    file_size_text,
+    logger::{self, Loggable},
+    num_packets,
     protos::{
         self,
         file_description_response::{file_status::FileStatusEnum, FileStatus},
-        AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse,
+        AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse, FilePart,
+        FilePartResponse,
     },
+    VecWithLen, DEFAULT_PACKET_SIZE, MIN_PACKET_SIZE,
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -38,7 +45,8 @@ struct Args {
     /// Packet size to use went sending the file.
     /// Larger packets have to do less writing to the database, but may have to send more data if the connection drops
     #[arg(short, long)]
-    packet_size: Option<u64>,
+    #[arg(default_value_t = DEFAULT_PACKET_SIZE)]
+    packet_size: u64,
 }
 
 fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
@@ -52,6 +60,13 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
                 .1
         }
     };
+
+    if args.packet_size < MIN_PACKET_SIZE {
+        logger::error(format!(
+            "packet size ({}) must be >= {MIN_PACKET_SIZE}",
+            args.packet_size
+        ))
+    }
 
     let auth_request = AuthRequest {
         version: env!("CARGO_PKG_VERSION").into(),
@@ -71,14 +86,8 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
         _ => logger::info("Auth succeeded!"),
     };
 
-    let file_description = FileDescription::try_from(args.file)?;
-
-    // Add packet size if specified
-    let file_description = if let Some(packet_size) = args.packet_size {
-        file_description.with_packet_size(packet_size)
-    } else {
-        file_description
-    };
+    let file_description =
+        FileDescription::try_from(&args.file)?.with_packet_size(args.packet_size);
 
     stream.write(&file_description.encode_to_vec())?;
 
@@ -104,7 +113,7 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
             true
         }
         FileStatusEnum::Resumeable => {
-            logger::info(format!("File already exists! Resuming with packet size {} on packet number {request_packet}", file_size_text(packet_size)));
+            logger::info(format!("File already exists! Resuming with packet size {} on packet number {request_packet}/{num_packets}", file_size_text(packet_size)));
             false
         }
         FileStatusEnum::Nonexistent => {
@@ -117,12 +126,44 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
         Err(std::io::Error::other("File already exists"))?
     }
 
+    let filename = args.file;
+    let mut file = fs::File::open(&filename)?;
+    file.seek(std::io::SeekFrom::Start(request_packet * packet_size))?;
+    let mut buf: Vec<u8> = vec![69; packet_size as usize];
+    let mut response_buf = Vec::with_len(1024);
+
+    let style = ProgressStyle::with_template(
+        "[{elapsed_precise}] [{human_pos}/{human_len}] {wide_bar} ETA: {eta_precise}",
+    )?;
+    let bar = ProgressBar::new(num_packets)
+        .with_style(style)
+        .with_position(request_packet);
+    for part_num in request_packet..num_packets {
+        let r = file.read(&mut buf[..packet_size as usize])?;
+
+        if r < packet_size as usize {
+            assert!(file.read(&mut buf[..])? == 0) // Ensure we've actually read to the end of the file
+        }
+        let file_part = FilePart {
+            part_num,
+            data: buf.clone(),
+        };
+        stream.write(&file_part.encode_to_vec())?;
+
+        let nbytes = stream.read(&mut response_buf)?;
+        let res = FilePartResponse::decode(&response_buf[..nbytes])?;
+        if res.success == false {
+            logger::error(format!("Failed to upload file: {}", res.message))
+        }
+        bar.inc(1);
+    }
+    bar.finish_and_clear();
+
     Ok(file_status)
 }
 
-fn main() {
-    match connect() {
-        Err(err) => logger::error(format!("{}", err.to_string())),
-        Ok(_) => logger::info("Uploaded file successfully!"),
-    }
+fn main() -> Result<(), Box<dyn Error>> {
+    connect().to_error("");
+    logger::info("Uploaded file successfully!");
+    Ok(())
 }

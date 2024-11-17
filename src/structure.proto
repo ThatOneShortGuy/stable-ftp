@@ -33,6 +33,7 @@ message FileDescriptionResponse {
     required uint64 id = 2;
     required uint64 request_packet = 3;
     required uint64 packet_size = 4;
+    required uint64 total_packets = 5;
   }
   oneof Event {
     FileStatus status = 1;
@@ -46,10 +47,6 @@ message FilePart {
 }
 
 message FilePartResponse {
-  enum FilePartEnum {
-    Success = 1;
-    InvalidMessage = 2;
-    InvalidData = 3;
-    InvalidPartNum = 4;
-  }
+  required bool success = 1;
+  required string message = 2;
 }

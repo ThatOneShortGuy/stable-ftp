@@ -309,6 +309,9 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Args { ip, target_folder } = Args::parse();
+
+    std::fs::create_dir_all(&target_folder).to_error("Failed to create folder");
+
     let listener = TcpListener::bind(ip).to_error("Failed to bind to IP");
     logger::info(&format!("Server listening on {ip}"));
 

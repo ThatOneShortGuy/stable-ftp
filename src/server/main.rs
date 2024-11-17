@@ -267,7 +267,7 @@ fn recv_files(
     let mut data = Vec::with_len(file_status.packet_size as usize + 48);
 
     for current_packet in file_status.request_packet..file_status.total_packets {
-        let nbytes = read_at_least(stream, &mut data, file_status.packet_size as usize + 32)
+        let nbytes = read_at_least(stream, &mut data, file_status.packet_size as usize + 1)
             .with_warning("Failed to read in the minimum number of bytes")?;
         let FilePart { part_num, data } =
             FilePart::decode(&data[..nbytes]).with_warning(format!(

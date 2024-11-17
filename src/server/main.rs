@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::Parser;
-use prost::Message;
+use prost::{bytes::Buf, Message};
 use rusqlite::Connection;
 use stable_ftp::{
     db::{self, DbFile},
@@ -141,48 +141,6 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
     }
 }
 
-fn recv_files(
-    con: &Connection,
-    stream: &mut TcpStream,
-    mut file: std::fs::File,
-    file_status: FileStatus,
-    mut db_file: DbFile,
-) -> Result<(), Box<dyn Error>> {
-    let mut data = Vec::with_len(file_status.packet_size as usize + 48);
-
-    for current_packet in file_status.request_packet..file_status.total_packets {
-        let nbytes = stream.read(&mut data)?;
-        let FilePart { part_num, data } =
-            FilePart::decode(&data[..nbytes]).with_warning(format!(
-                "Failed decoding from {nbytes} where buffer is {}",
-                data.len()
-            ))?;
-
-        assert!(
-            part_num == current_packet,
-            "Part Num: {part_num} =! Expected Num: {current_packet}"
-        );
-        file.write_all(&data)
-            .with_warning("Failed to write data to file")?;
-        db_file = db_file.inc_current_packet(con)?;
-
-        // logger::info(format!(
-        //     "File '{}' wrote part {} of {}",
-        //     db_file.filename.to_string_lossy(),
-        //     part_num,
-        //     db_file.total_packets
-        // ));
-
-        let res = FilePartResponse {
-            success: true,
-            message: String::new(),
-        };
-        stream.write(&res.encode_to_vec())?;
-    }
-
-    Ok(())
-}
-
 fn handle_file_description(
     stream: &mut TcpStream,
     db: &Connection,
@@ -291,6 +249,61 @@ fn handle_file_description(
         }
     };
     Ok((file, file_status, dbfile))
+}
+
+fn recv_files(
+    con: &Connection,
+    stream: &mut TcpStream,
+    mut file: std::fs::File,
+    file_status: FileStatus,
+    mut db_file: DbFile,
+) -> Result<(), Box<dyn Error>> {
+    let mut data = Vec::with_len(file_status.packet_size as usize + 48);
+
+    for current_packet in file_status.request_packet..file_status.total_packets {
+        let nbytes = read_at_least(stream, &mut data, file_status.packet_size as usize)?;
+        let FilePart { part_num, data } =
+            FilePart::decode(&data[..nbytes]).with_warning(format!(
+                "Failed decoding from {nbytes} where buffer is {}",
+                data.len()
+            ))?;
+
+        assert!(
+            part_num == current_packet,
+            "Part Num: {part_num} =! Expected Num: {current_packet}"
+        );
+        file.write_all(&data)
+            .with_warning("Failed to write data to file")?;
+        db_file = db_file.inc_current_packet(con)?;
+
+        // logger::info(format!(
+        //     "File '{}' wrote part {} of {}",
+        //     db_file.filename.to_string_lossy(),
+        //     part_num,
+        //     db_file.total_packets
+        // ));
+
+        let res = FilePartResponse {
+            success: true,
+            message: String::new(),
+        };
+        stream.write(&res.encode_to_vec())?;
+    }
+
+    Ok(())
+}
+
+fn read_at_least(
+    stream: &mut TcpStream,
+    buf: &mut [u8],
+    expected: usize,
+) -> Result<usize, Box<dyn Error>> {
+    let mut nread = 0;
+    while nread < expected {
+        nread += stream.read(buf[nread..].as_mut())?;
+    }
+
+    Ok(nread)
 }
 
 #[derive(Parser, Debug, Clone)]

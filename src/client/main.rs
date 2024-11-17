@@ -2,7 +2,7 @@ use std::{
     error::Error,
     fs,
     io::{Read, Seek, Write},
-    net::{SocketAddr, TcpStream},
+    net::TcpStream,
     path::PathBuf,
 };
 
@@ -32,7 +32,7 @@ use stable_ftp::{
 struct Args {
     /// Target ip to send file
     #[arg(short, long)]
-    target: SocketAddr,
+    target: String,
 
     /// The file to send
     #[arg(short, long)]
@@ -73,6 +73,7 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
         token,
     };
     let mut stream = TcpStream::connect(args.target)?;
+    logger::info(format!("Connected to {}", stream.peer_addr()?));
     stream.write(&auth_request.encode_to_vec())?;
 
     let mut buf = [0; 1024];

@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     io::{self, prelude::*},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -324,7 +324,7 @@ struct Args {
     /// IP:Port to attach on
     #[arg(long)]
     #[arg(default_value = "0.0.0.0:35672")]
-    ip: SocketAddr,
+    ip: String,
 
     /// The folder to dump all files into
     #[arg(short, long)]
@@ -337,17 +337,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&target_folder).to_error("Failed to create folder");
 
-    let listener = TcpListener::bind(ip).to_error("Failed to bind to IP");
-    logger::info(&format!("Server listening on {ip}"));
+    let listeners = ip
+        .to_socket_addrs()?
+        .map(|ip| {
+            let target_folder = target_folder.clone();
+            std::thread::spawn(move || {
+                let listener = TcpListener::bind(ip).to_error("Failed to bind to IP");
+                logger::info(&format!("Server listening on {ip}"));
 
-    for conn in listener.incoming() {
-        let fname = target_folder.clone();
-        match conn.with_warning("Failed to connect") {
-            Ok(stream) => {
-                std::thread::spawn(move || handle_client(stream, &fname));
-            }
-            _ => (),
-        }
+                for conn in listener.incoming() {
+                    let fname = target_folder.clone();
+                    match conn.with_warning("Failed to connect") {
+                        Ok(stream) => {
+                            std::thread::spawn(move || handle_client(stream, &fname));
+                        }
+                        _ => (),
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for listener in listeners {
+        match listener.join() {
+            Ok(_) => (),
+            Err(_) => (),
+        };
     }
     Ok(())
 }

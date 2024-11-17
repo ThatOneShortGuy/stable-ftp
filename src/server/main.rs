@@ -148,11 +148,15 @@ fn recv_files(
     file_status: FileStatus,
     mut db_file: DbFile,
 ) -> Result<(), Box<dyn Error>> {
-    let mut data = Vec::with_len(file_status.packet_size as usize + 8);
+    let mut data = Vec::with_len(file_status.packet_size as usize + 48);
 
     for current_packet in file_status.request_packet..file_status.total_packets {
         let nbytes = stream.read(&mut data)?;
-        let FilePart { part_num, data } = FilePart::decode(&data[..nbytes])?;
+        let FilePart { part_num, data } =
+            FilePart::decode(&data[..nbytes]).with_warning(format!(
+                "Failed decoding from {nbytes} where buffer is {}",
+                data.len()
+            ))?;
 
         assert!(
             part_num == current_packet,
@@ -213,14 +217,14 @@ fn handle_file_description(
             let file_path = target_folder.join(&file.filename);
 
             // Ensure the file is *actually* there
-            let real_file = match std::path::Path::new(&file.filename).exists() {
+            let real_file = match std::path::Path::new(&file_path).exists() {
                 true => std::fs::File::options()
                     .read(true)
                     .write(true)
                     .open(file_path),
                 false => {
                     logger::info(format!(
-                        "The file \"{}\" in db doesn't actually exist, creating it now",
+                        "The file \"{}\" from db doesn't actually exist, creating it now",
                         file.filename
                             .to_str()
                             .to_error("Invalid UTF-8 parsing filename")

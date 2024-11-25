@@ -7,20 +7,20 @@ use std::{
 };
 
 use clap::Parser;
-use prost::Message;
+use lazy_marshal::prelude::*;
 use rusqlite::Connection;
+
 use stable_ftp::{
+    compare_versions,
     db::{self, DbFile},
     file_size_text,
     logger::{self, Loggable},
     num_packets,
-    protos::{
-        compare_versions,
-        file_description_response::{file_status::FileStatusEnum, Event, FileStatus},
-        AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse, FilePart,
-        FilePartResponse, VersionCompatibility,
+    structs::{
+        AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse, FilePartResponse,
+        FileStatus, FileStatusEnum,
     },
-    VecWithLen, MIN_PACKET_SIZE,
+    StreamIterator, VersionCompatibility, MIN_PACKET_SIZE,
 };
 
 fn handle_auth_err(stream: &mut TcpStream, msg: impl AsRef<str>) {
@@ -29,28 +29,20 @@ fn handle_auth_err(stream: &mut TcpStream, msg: impl AsRef<str>) {
         failure_reason: format!("Failed to Authenitcate: {}", msg.as_ref()),
     };
     stream
-        .write(&response.encode_to_vec())
+        .write(&response.marshal().collect::<Vec<_>>())
         .to_error("Failed to write to buffer stream");
     return;
 }
 
 fn handle_client(mut stream: TcpStream, target_folder: &Path) {
-    let mut buf = [0; 1024];
-
     logger::info(format!(
         "New client connected: {}",
         stream.peer_addr().to_error("Can't get the peer address??")
     ));
 
-    let _bytes_read = match stream.read(&mut buf[..]) {
-        Ok(a) => a,
-        Err(err) => {
-            handle_auth_err(&mut stream, err.to_string());
-            return;
-        }
-    };
+    let mut response_stream = StreamIterator(stream.try_clone().unwrap().bytes());
 
-    let AuthRequest { version, token } = match AuthRequest::decode(&buf[.._bytes_read]) {
+    let AuthRequest { version, token } = match AuthRequest::unmarshal(&mut response_stream) {
         Ok(req) => req,
         Err(err) => {
             handle_auth_err(&mut stream, format!("Auth request not understood: {err}"));
@@ -74,22 +66,16 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
             failure_reason: "Invalid Token/Token Not Found".to_string(),
         };
         stream
-            .write(&res.encode_to_vec())
+            .write(&res.marshal().collect::<Vec<_>>())
             .to_error("Failed to write fail to stream");
         return;
     }
     let user_id = match db::get_user_id(&con, &token) {
         Ok(v) => v,
         Err(err) => {
-            let res = FileDescriptionResponse {
-                event: Some(
-                    stable_ftp::protos::file_description_response::Event::FailMessage(
-                        err.to_string(),
-                    ),
-                ),
-            };
+            let res = FileDescriptionResponse::FailMessage(err.to_string());
             stream
-                .write(&res.encode_to_vec())
+                .write(&res.marshal().collect::<Vec<_>>())
                 .to_error("Failed to write to stream");
             return;
         }
@@ -100,32 +86,38 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
         failure_reason: String::new(),
     };
     stream
-        .write(&response.encode_to_vec())
+        .write(&response.marshal().collect::<Vec<_>>())
         .to_error("Failed to return success auth message");
 
     stream
         .set_read_timeout(Some(Duration::new(5, 0)))
         .to_error("Failed to set the timeout?!?");
 
-    let (file, file_description, db_file) =
-        match handle_file_description(&mut stream, &con, user_id, target_folder) {
-            Ok(file) => file,
-            Err(err) => {
-                let res = FileDescriptionResponse {
-                    event: Some(
-                        stable_ftp::protos::file_description_response::Event::FailMessage(
-                            err.to_string(),
-                        ),
-                    ),
-                };
-                stream
-                    .write(&res.encode_to_vec())
-                    .to_error("Failed to write to stream");
-                return;
-            }
-        };
+    let (file, file_description, db_file) = match handle_file_description(
+        &mut stream,
+        &mut response_stream,
+        &con,
+        user_id,
+        target_folder,
+    ) {
+        Ok(file) => file,
+        Err(err) => {
+            let res = FileDescriptionResponse::FailMessage(err.to_string());
+            stream
+                .write(&res.marshal().collect::<Vec<_>>())
+                .to_error("Failed to write to stream");
+            return;
+        }
+    };
 
-    match recv_files(&con, &mut stream, file, file_description, db_file) {
+    match recv_files(
+        &con,
+        &mut stream,
+        &mut response_stream,
+        file,
+        file_description,
+        db_file,
+    ) {
         Ok(a) => a,
         Err(e) => {
             logger::warning(format!("Failed in recv_files: {}", e.to_string()));
@@ -134,7 +126,7 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
                 message: e.to_string(),
             };
             stream
-                .write(&res.encode_to_vec())
+                .write(&res.marshal().collect::<Vec<_>>())
                 .to_error("Failed to write to stream");
             return;
         }
@@ -143,18 +135,16 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
 
 fn handle_file_description(
     stream: &mut TcpStream,
+    response_stream: &mut StreamIterator,
     db: &Connection,
     user_id: u64,
     target_folder: &Path,
 ) -> Result<(std::fs::File, FileStatus, DbFile), Box<dyn Error>> {
-    let mut buf = [0; 1024];
-    let nbytes = stream.read(&mut buf)?;
-
     let FileDescription {
         name,
         size,
         packet_size,
-    } = FileDescription::decode(&buf[..nbytes])?;
+    } = FileDescription::unmarshal(response_stream)?;
 
     if packet_size < MIN_PACKET_SIZE {
         Err(format!(
@@ -208,9 +198,7 @@ fn handle_file_description(
             ));
             (
                 real_file,
-                FileDescriptionResponse {
-                    event: Some(Event::Status(file_status)),
-                },
+                FileDescriptionResponse::Status(file_status),
                 file,
             )
         }
@@ -229,15 +217,13 @@ fn handle_file_description(
             let total_packets = num_packets(packet_size, size);
             let db_file = DbFile::new(db, name.into(), total_packets, packet_size, user_id)?;
 
-            let file_res = FileDescriptionResponse {
-                event: Some(Event::Status(FileStatus {
-                    status: FileStatusEnum::Nonexistent.into(),
-                    id: db_file.id,
-                    request_packet: 0,
-                    packet_size,
-                    total_packets,
-                })),
-            };
+            let file_res = FileDescriptionResponse::Status(FileStatus {
+                status: FileStatusEnum::Nonexistent.into(),
+                id: db_file.id,
+                request_packet: 0,
+                packet_size,
+                total_packets,
+            });
 
             (file, file_res, db_file)
         }
@@ -247,10 +233,10 @@ fn handle_file_description(
     file.seek(io::SeekFrom::Start(seek_pos))
         .with_warning("Failed to seek to the right part of the file")?;
 
-    stream.write(&response.encode_to_vec())?;
-    let file_status = match response.event.unwrap() {
-        Event::Status(file_status) => file_status,
-        Event::FailMessage(_) => {
+    stream.write(&response.clone().marshal().collect::<Vec<_>>())?;
+    let file_status = match response {
+        FileDescriptionResponse::Status(file_status) => file_status,
+        FileDescriptionResponse::FailMessage(_) => {
             logger::error("There shouldn't be a failure response at this point")
         }
     };
@@ -260,20 +246,19 @@ fn handle_file_description(
 fn recv_files(
     con: &Connection,
     stream: &mut TcpStream,
+    response_stream: &mut StreamIterator,
     mut file: std::fs::File,
     file_status: FileStatus,
     mut db_file: DbFile,
 ) -> Result<(), Box<dyn Error>> {
-    let mut data = Vec::with_len(file_status.packet_size as usize + 48);
-
     for current_packet in file_status.request_packet..file_status.total_packets {
-        let nbytes = read_at_least(stream, &mut data, file_status.packet_size as usize + 1)
-            .with_warning("Failed to read in the minimum number of bytes")?;
-        let FilePart { part_num, data } =
-            FilePart::decode(&data[..nbytes]).with_warning(format!(
-                "Failed decoding from {nbytes} where buffer is {}",
-                data.len()
-            ))?;
+        let part_num = u64::unmarshal(response_stream)?;
+        let len = usize::unmarshal(response_stream)?;
+        let mut data = Vec::with_capacity(len);
+        unsafe {
+            data.set_len(len);
+        }
+        stream.read_exact(&mut data)?;
 
         assert!(
             part_num == current_packet,
@@ -290,28 +275,15 @@ fn recv_files(
             message: String::new(),
         };
         stream
-            .write(&res.encode_to_vec())
+            .write(&res.marshal().collect::<Vec<_>>())
             .with_warning("Failed to write FilePartResponse to stream")?;
     }
 
     logger::info(format!(
-        "Successfully recieved all the data for {}",
+        "Successfully recieved all the data for \"{}\"",
         db_file.filename.to_string_lossy()
     ));
     Ok(())
-}
-
-fn read_at_least(
-    stream: &mut TcpStream,
-    buf: &mut [u8],
-    expected: usize,
-) -> Result<usize, Box<dyn Error>> {
-    let mut nread = 0;
-    while nread < expected {
-        nread += stream.read(buf[nread..].as_mut())?;
-    }
-
-    Ok(nread)
 }
 
 #[derive(Parser, Debug, Clone)]

@@ -8,19 +8,17 @@ use std::{
 
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use prost::Message;
+use lazy_marshal::prelude::*;
 
 use stable_ftp::{
     file_size_text,
     logger::{self, Loggable},
     num_packets,
-    protos::{
-        self,
-        file_description_response::{file_status::FileStatusEnum, FileStatus},
+    structs::{
         AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse, FilePart,
-        FilePartResponse,
+        FilePartResponse, FileStatus, FileStatusEnum,
     },
-    VecWithLen, DEFAULT_PACKET_SIZE, MIN_PACKET_SIZE,
+    StreamIterator, DEFAULT_PACKET_SIZE, MIN_PACKET_SIZE,
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -74,12 +72,11 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
     };
     let mut stream = TcpStream::connect(args.target)?;
     logger::info(format!("Connected to {}", stream.peer_addr()?));
-    stream.write(&auth_request.encode_to_vec())?;
+    stream.write(&auth_request.marshal().collect::<Vec<_>>())?;
 
-    let mut buf = [0; 1024];
-    let num_read = stream.read(&mut buf)?;
+    let mut response_stream = StreamIterator(stream.try_clone().unwrap().bytes());
 
-    match AuthResponse::decode(&buf[..num_read])? {
+    match AuthResponse::unmarshal(&mut response_stream)? {
         AuthResponse {
             success: false,
             failure_reason: msg,
@@ -90,15 +87,14 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
     let file_description =
         FileDescription::try_from(&args.file)?.with_packet_size(args.packet_size);
 
-    stream.write(&file_description.encode_to_vec())?;
+    stream.write(&file_description.clone().marshal().collect::<Vec<_>>())?;
 
-    let nread = stream.read(&mut buf)?;
-    let f_response = FileDescriptionResponse::decode(&buf[..nread])?;
+    let f_response = FileDescriptionResponse::unmarshal(&mut response_stream)?;
 
     // Should always return the Some variant
-    let file_status = match f_response.event.unwrap() {
-        protos::file_description_response::Event::Status(file_status) => file_status,
-        protos::file_description_response::Event::FailMessage(message) => logger::error(message),
+    let file_status = match f_response {
+        FileDescriptionResponse::Status(file_status) => file_status,
+        FileDescriptionResponse::FailMessage(message) => logger::error(message),
     };
     let FileStatus {
         request_packet,
@@ -131,7 +127,6 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
     let mut file = fs::File::open(&filename)?;
     file.seek(std::io::SeekFrom::Start(request_packet * packet_size))?;
     let mut buf: Vec<u8> = vec![69; packet_size as usize];
-    let mut response_buf = Vec::with_len(1024);
 
     let style = ProgressStyle::with_template(
         "[{elapsed_precise}] [{human_pos}/{human_len}] {wide_bar} ETA: {eta_precise}",
@@ -147,12 +142,11 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
         }
         let file_part = FilePart {
             part_num,
-            data: buf.clone(),
+            data: buf[..r].to_vec(),
         };
-        stream.write(&file_part.encode_to_vec())?;
+        stream.write(&file_part.marshal().collect::<Vec<_>>())?;
 
-        let nbytes = stream.read(&mut response_buf)?;
-        let res = FilePartResponse::decode(&response_buf[..nbytes])?;
+        let res = FilePartResponse::unmarshal(&mut response_stream)?;
         if res.success == false {
             logger::error(format!("Failed to upload file: {}", res.message))
         }

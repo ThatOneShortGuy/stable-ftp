@@ -6,9 +6,9 @@ edition = "2021"
 [dependencies]
 chrono = { version = "0.4.38", features = ["now", "clock"], default-features = false }
 clap = { version = "4.5.*", features = ["derive"] }
-prost = { version = "0.*", features = ["derive", "std"], default-features = false }
 indicatif = { version = "0.*", features = ["unicode-width"], default-features = false }
 rusqlite = { version = "*", features = ["bundled"], default-features = false }
+lazy_marshal = { path = "../lazy_marshal/lazy_marshal", features = ["derive"], default-features = false}
 
 [profile.release]
 lto = "fat"
@@ -24,5 +24,3 @@ path = "src/server/main.rs"
 name = "client"
 path = "src/client/main.rs"
 
-[build-dependencies]
-prost-build = "0.13.3"

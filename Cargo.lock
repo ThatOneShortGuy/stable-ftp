@@ -283,6 +283,7 @@ dependencies = [
 [[package]]
 name = "lazy_marshal"
 version = "0.1.0"
+source = "git+https://github.com/ThatOneShortGuy/lazy_marshal#a4349be7ef18b34c1445834c30f2e1b807062fdf"
 dependencies = [
  "lazy_marshal_derive",
 ]
@@ -290,6 +291,7 @@ dependencies = [
 [[package]]
 name = "lazy_marshal_derive"
 version = "0.1.0"
+source = "git+https://github.com/ThatOneShortGuy/lazy_marshal#a4349be7ef18b34c1445834c30f2e1b807062fdf"
 dependencies = [
  "proc-macro2",
  "quote",

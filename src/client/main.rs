@@ -11,14 +11,13 @@ use indicatif::{ProgressBar, ProgressStyle};
 use lazy_marshal::prelude::*;
 
 use stable_ftp::{
-    file_size_text,
+    DEFAULT_PACKET_SIZE, MIN_PACKET_SIZE, StreamIterator, file_size_text,
     logger::{self, Loggable},
     num_packets,
     structs::{
         AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse, FilePart,
         FilePartResponse, FileStatus, FileStatusEnum,
     },
-    StreamIterator, DEFAULT_PACKET_SIZE, MIN_PACKET_SIZE,
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -70,6 +69,7 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
         version: env!("CARGO_PKG_VERSION").into(),
         token,
     };
+    logger::info(format!("Connecting to {}", args.target));
     let mut stream = TcpStream::connect(args.target)?;
     logger::info(format!("Connected to {}", stream.peer_addr()?));
     stream.write(&auth_request.marshal().collect::<Vec<_>>())?;
@@ -110,7 +110,10 @@ fn connect() -> Result<FileStatus, Box<dyn std::error::Error>> {
             true
         }
         FileStatusEnum::Resumeable => {
-            logger::info(format!("File already exists! Resuming with packet size {} on packet number {request_packet}/{num_packets}", file_size_text(packet_size)));
+            logger::info(format!(
+                "File already exists! Resuming with packet size {} on packet number {request_packet}/{num_packets}",
+                file_size_text(packet_size)
+            ));
             false
         }
         FileStatusEnum::Nonexistent => {

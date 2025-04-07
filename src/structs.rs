@@ -1,5 +1,7 @@
 use lazy_marshal::prelude::*;
 
+pub type Id = i32;
+
 #[derive(Debug, Clone, Copy, Marshal, UnMarshal)]
 pub struct Version {
     pub major: u32,
@@ -35,7 +37,7 @@ pub enum FileStatusEnum {
 
 #[derive(Debug, Clone, Marshal, UnMarshal)]
 pub struct FileStatus {
-    pub id: u64,
+    pub id: Id,
     pub status: FileStatusEnum,
     pub request_packet: u64,
     pub packet_size: u64,

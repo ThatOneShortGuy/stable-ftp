@@ -41,7 +41,7 @@ pub fn error(message: impl AsRef<str>) -> ! {
 pub fn warning(message: impl AsRef<str>) {
     let message = format_message(message, "WARNING");
 
-    eprintln!("\x1b[33m{message}\x1b[0m\n");
+    eprintln!("\x1b[33m{message}\x1b[0m");
     write_to_logs(&message);
 }
 

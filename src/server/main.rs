@@ -11,17 +11,17 @@ use lazy_marshal::prelude::*;
 use rusqlite::Connection;
 
 use stable_ftp::{
-    compare_versions,
-    db::{self, DbFile},
+    MIN_PACKET_SIZE, StreamIterator, VersionCompatibility, compare_versions,
+    db::{self, DbFile, UserAuth, get_write_connection},
     file_size_text,
     logger::{self, Loggable},
     num_packets,
     structs::{
         AuthRequest, AuthResponse, FileDescription, FileDescriptionResponse, FilePartResponse,
-        FileStatus, FileStatusEnum,
+        FileStatus, FileStatusEnum, Id,
     },
-    StreamIterator, VersionCompatibility, MIN_PACKET_SIZE,
 };
+use typed_db::DbTable;
 
 fn handle_auth_err(stream: &mut TcpStream, msg: impl AsRef<str>) {
     let response = AuthResponse {
@@ -54,29 +54,29 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
     let server_version = env!("CARGO_PKG_VERSION").into();
     let client_version = &version;
     if let VersionCompatibility::Incompatible = compare_versions(&server_version, client_version) {
-        handle_auth_err(&mut stream, format!("Version types are incompatible! Client version ({client_version}) is not compatible with server version ({server_version})"));
+        handle_auth_err(
+            &mut stream,
+            format!(
+                "Version types are incompatible! Client version ({client_version}) is not compatible with server version ({server_version})"
+            ),
+        );
         return;
     }
 
     // Verify client with SQLite
-    let con = db::get_connection("stable-ftp.sqlite");
-    if !db::token_exists(&con, &token) {
-        let res = AuthResponse {
-            success: false,
-            failure_reason: "Invalid Token/Token Not Found".to_string(),
-        };
-        stream
-            .write(&res.marshal().collect::<Vec<_>>())
-            .to_error("Failed to write fail to stream");
-        return;
-    }
-    let user_id = match db::get_user_id(&con, &token) {
-        Ok(v) => v,
-        Err(err) => {
-            let res = FileDescriptionResponse::FailMessage(err.to_string());
+    let read_conn = db::get_read_connection().to_error("Failed to get read only connection to db");
+    let user = UserAuth::from_token(&read_conn, &token).to_error("Failed to query user auth table");
+
+    let user_id = match user {
+        Some(user) => user.id,
+        None => {
+            let res = AuthResponse {
+                success: false,
+                failure_reason: "Invalid Token/Token Not Found".to_string(),
+            };
             stream
                 .write(&res.marshal().collect::<Vec<_>>())
-                .to_error("Failed to write to stream");
+                .to_error("Failed to write fail to stream");
             return;
         }
     };
@@ -96,7 +96,7 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
     let (file, file_description, db_file) = match handle_file_description(
         &mut stream,
         &mut response_stream,
-        &con,
+        &read_conn,
         user_id,
         target_folder,
     ) {
@@ -111,7 +111,6 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
     };
 
     match recv_files(
-        &con,
         &mut stream,
         &mut response_stream,
         file,
@@ -136,8 +135,8 @@ fn handle_client(mut stream: TcpStream, target_folder: &Path) {
 fn handle_file_description(
     stream: &mut TcpStream,
     response_stream: &mut StreamIterator,
-    db: &Connection,
-    user_id: u64,
+    read_conn: &Connection,
+    user_id: Id,
     target_folder: &Path,
 ) -> Result<(std::fs::File, FileStatus, DbFile), Box<dyn Error>> {
     let FileDescription {
@@ -153,7 +152,7 @@ fn handle_file_description(
         ))?
     }
 
-    let file = db::find_filename(db, &name)?;
+    let file = DbFile::find_filename(read_conn, &name)?;
 
     let (mut file, response, dbfile) = match file {
         Some(file) => {
@@ -174,8 +173,6 @@ fn handle_file_description(
                     logger::info(format!(
                         "The file \"{}\" from db doesn't actually exist, creating it now",
                         file.filename
-                            .to_str()
-                            .to_error("Invalid UTF-8 parsing filename")
                     ));
                     std::fs::File::create_new(file_path)
                 }
@@ -192,7 +189,7 @@ fn handle_file_description(
 
             logger::info(format!(
                 "Resuming file download for \"{}\" on {}/{}",
-                file.filename.to_string_lossy(),
+                file.filename,
                 file.current_packet(),
                 file.total_packets
             ));
@@ -203,19 +200,22 @@ fn handle_file_description(
             )
         }
         None => {
-            let mut file = std::fs::File::create_new(target_folder.join(&name)).to_error(format!(
-                "'{name}' already exists in the {} folder",
-                target_folder.to_string_lossy()
-            ));
-            file.seek(io::SeekFrom::Start(size))?;
+            let total_packets = num_packets(packet_size, size);
+
+            let db_file = DbFile::new()
+                .with_filename(&name)
+                .with_total_packets(total_packets)
+                .with_packet_size(packet_size)
+                .with_inserted_by_id(user_id)
+                .build_val(&get_write_connection().lock().unwrap())?;
+
+            let mut file = std::fs::File::create_new(target_folder.join(&name))?;
+            file.seek(io::SeekFrom::Start(size - 1))?;
             file.write(&[69])?;
             logger::info(format!(
                 "Adding new file \"{name}\" with size {}",
                 file_size_text(size)
             ));
-
-            let total_packets = num_packets(packet_size, size);
-            let db_file = DbFile::new(db, name.into(), total_packets, packet_size, user_id)?;
 
             let file_res = FileDescriptionResponse::Status(FileStatus {
                 status: FileStatusEnum::Nonexistent.into(),
@@ -244,7 +244,6 @@ fn handle_file_description(
 }
 
 fn recv_files(
-    con: &Connection,
     stream: &mut TcpStream,
     response_stream: &mut StreamIterator,
     mut file: std::fs::File,
@@ -254,6 +253,12 @@ fn recv_files(
     for current_packet in file_status.request_packet..file_status.total_packets {
         let part_num = u64::unmarshal(response_stream)?;
         let len = usize::unmarshal(response_stream)?;
+        if len as u64 > file_status.packet_size {
+            Err(format!(
+                "Packet too large ({len} > {})",
+                file_status.packet_size
+            ))?;
+        }
         let mut data = Vec::with_capacity(len);
         unsafe {
             data.set_len(len);
@@ -267,7 +272,7 @@ fn recv_files(
         file.write_all(&data)
             .with_warning("Failed to write data to file")?;
         db_file = db_file
-            .inc_current_packet(con)
+            .inc_current_packet(&get_write_connection().lock().unwrap())
             .with_warning("Failed to increment current packet in db")?;
 
         let res = FilePartResponse {
@@ -281,7 +286,7 @@ fn recv_files(
 
     logger::info(format!(
         "Successfully recieved all the data for \"{}\"",
-        db_file.filename.to_string_lossy()
+        db_file.filename
     ));
     Ok(())
 }
@@ -304,10 +309,21 @@ struct Args {
     target_folder: PathBuf,
 }
 
+fn init_db() -> Result<(), rusqlite::Error> {
+    let conn = get_write_connection().lock().unwrap();
+    let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
+    let _ = conn.execute("PRAGMA journal_mode = WAL;", []);
+
+    UserAuth::create_table(&conn)?;
+    DbFile::create_table(&conn)?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Args { ip, target_folder } = Args::parse();
 
     std::fs::create_dir_all(&target_folder).to_error("Failed to create folder");
+    init_db().to_error("Failed to create db");
 
     let listeners = ip
         .to_socket_addrs()?

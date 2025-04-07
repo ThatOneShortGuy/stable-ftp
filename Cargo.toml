@@ -1,14 +1,22 @@
 [package]
 name = "stable-ftp"
 version = "0.1.1"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-chrono = { version = "0.4.38", features = ["now", "clock"], default-features = false }
-clap = { version = "4.5.*", features = ["derive"] }
-indicatif = { version = "0.*", features = ["unicode-width"], default-features = false }
-rusqlite = { version = "*", features = ["bundled"], default-features = false }
-lazy_marshal = { git = "https://github.com/ThatOneShortGuy/lazy_marshal", features = ["derive"], default-features = false }
+chrono = { version = "0.4.*", features = [
+    "now",
+    "clock",
+], default-features = false }
+clap = { version = "4.*", features = ["derive"] }
+indicatif = { version = "0.*", features = [
+    "unicode-width",
+], default-features = false }
+rusqlite = { version = "0.*", features = ["bundled"], default-features = false }
+lazy_marshal = { git = "https://github.com/ThatOneShortGuy/lazy_marshal", features = [
+    "derive",
+], default-features = false }
+typed_db = { git = "https://github.com/ThatOneShortGuy/typed_db", version = "0.1.1" }
 
 [profile.release]
 lto = "fat"
@@ -23,4 +31,3 @@ path = "src/server/main.rs"
 [[bin]]
 name = "client"
 path = "src/client/main.rs"
-
